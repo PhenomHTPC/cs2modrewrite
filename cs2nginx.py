@@ -7,6 +7,7 @@
 import argparse
 import sys
 import re
+from urllib.parse import urlparse
 
 description = '''
 Requires Python 3.0+
@@ -22,13 +23,18 @@ The resulting Nginx config will:
 
 parser = argparse.ArgumentParser(description=description)
 parser.add_argument('-i', dest='inputfile', help='C2 Profile file', required=True)
-parser.add_argument('-c', dest='c2server', help='C2 Server URL (e.g., http://teamserver_ip or https://teamserver_domain)', required=True)
-parser.add_argument('-r', dest='redirect', help='Redirect non-matching requests to this URL (http://google.com)', required=True)
-parser.add_argument('-H', dest='hostname', help='Hostname for Nginx redirector', required=True)
+parser.add_argument('-ci', dest='c2server', help='C2 Server URL (e.g., https://internal_IP)', required=True)
+parser.add_argument('-cd', dest='c2domain', help= 'The sub domain and TLD of the traffic intended for the C2 (e.g sub.domain.com)', required=True)
+parser.add_argument('-r', dest='redirect', help='Redirect to the WWW page of campaign TLD or completely different URL (https://site.com)', required=True)
+#parser.add_argument('-H', dest='hostname', help='Hostname for Nginx redirector NOT USED', required=False)
 
 args = parser.parse_args()
 
-# Make sure we were provided with vaild URLs 
+# Create a clean url for the conf template.
+redirector_url = urlparse(args.redirect)
+redirector_tld = '.'.join(redirector_url.netloc.split('.')[-3:])
+
+# Make sure we were provided with vaild URLs
 # https://stackoverflow.com/questions/7160737/python-how-to-validate-a-url-in-python-malformed-or-not
 regex = re.compile(
     r'^(?:http|ftp)s?://' # http:// or https://
@@ -58,6 +64,7 @@ contents = re.sub(re.compile("#.*?\n" ) ,"" ,contents)
 # Search Strings
 ua_string  = "set useragent"
 set_uri    = r"set uri.*\"(.*?)\"\;"
+host_header = r"header.\"host\".\"(.*?)\""
 
 # Errors
 errorfound = False
@@ -84,16 +91,32 @@ else:
     # i.e. set uri "/path/1 /path/2"
     split_uris = []
     for uri in uris:
-        for i in uri.split():  
+        for i in uri.split():
             split_uris.append(i)
     # Remove any duplicate URIs
     uris = list(set(split_uris))
+
+# Grab all "Host" headers and their values
+if len(re.findall(host_header,contents,re.IGNORECASE)) == 0:
+    hostheaders = ""
+    print("No Host Headers were found in the profile")
+else:
+    hostheaders = re.findall(host_header,contents,re.IGNORECASE)
+    split_host_headers = []
+    for host in hostheaders:
+        for h in host.split():
+            split_host_headers.append(h)
+    # Remove duplicate host headers and put them in a list.
+    hostheaders = list(set(split_host_headers))
 
 # Create UA in modrewrite syntax. No regex needed in UA string matching, but () characters must be escaped
 ua_string = ua.replace('(','\(').replace(')','\)')
 
 # Create URI string in modrewrite syntax. "*" are needed in regex to support GET and uri-append parameters on the URI
 uris_string = ".*|".join(uris) + ".*"
+
+# Create a string of Hosts.
+hosts_string = " ".join(hostheaders) + " "
 
 nginx_template = '''
 ########################################
@@ -157,7 +180,7 @@ http {{
     gzip_disable "msie6";
 
     ############################
-    # HTTP server block with reverse-proxy 
+    # HTTP server block with reverse-proxy
     ############################
 
     server {{
@@ -166,34 +189,34 @@ http {{
         #########################
         set $C2_SERVER {c2server};
         set $REDIRECT_DOMAIN {redirect};
-        server_name {hostname};
+        server_name {c2domain} {hosts};
 
         #########################
         # Listening ports
         #########################
-        listen 80;
-        listen [::]:80;
-        
+        #listen 80;
+        #listen [::]:80;
+
         #####################
         # SSL Configuration
         #####################
-        #listen 443 ssl;
-        #listen [::]:443 ssl;
+        listen 443 ssl;
+        listen [::]:443 ssl;
         #ssl on;
 
-        #ssl_certificate /etc/letsencrypt/live/<DOMAIN_NAME>/fullchain.pem; # managed by Certbot
-        #ssl_certificate_key /etc/letsencrypt/live/<DOMAIN_NAME>/privkey.pem; # managed by Certbot
-        #ssl_session_cache shared:le_nginx_SSL:1m; # managed by Certbot
-        #ssl_session_timeout 1440m; # managed by Certbot
-        #ssl_protocols TLSv1 TLSv1.1 TLSv1.2; # managed by Certbot
-        #ssl_prefer_server_ciphers on; # managed by Certbot
+        ssl_certificate /etc/letsencrypt/live/{c2domain}/fullchain.pem; # managed by Certbot
+        ssl_certificate_key /etc/letsencrypt/live/{c2domain}/privkey.pem; # managed by Certbot
+        ssl_session_cache shared:le_nginx_SSL:1m; # managed by Certbot
+        ssl_session_timeout 1440m; # managed by Certbot
+        ssl_protocols TLSv1 TLSv1.1 TLSv1.2; # managed by Certbot
+        ssl_prefer_server_ciphers on; # managed by Certbot
 
         #########################################
         # Server root directory for serving files
         #########################################
         root /var/www/html;
         index index.html;
-        
+
         ##########################
         # Error handling
         ##########################
@@ -215,12 +238,12 @@ http {{
         # C2 Profile endpoints
         ##########################
         # Custom regex to allow requests to backend C2 server
-        # Note: If the backend C2 server isn't available, the useragent will receive a redirect to the 
+        # Note: If the backend C2 server isn't available, the useragent will receive a redirect to the
         #       redirector's root page due to the custom error handling configured above
         # Note: This intentionally does not handle default Beacon staging ^/....
         location ~ ^({uris})$ {{
             proxy_pass          $C2_SERVER;
-        
+
             # If you want to pass the C2 server's "Server" header through then uncomment this line
             # proxy_pass_header Server;
             expires             off;
@@ -252,6 +275,29 @@ http {{
         #        proxy_set_headerX-Real-IP              $remote_addr;
         #}}
 	}}
+    server {{
+		listen 443 ssl;
+        	listen [::]:443 ssl;
+
+        	ssl_certificate /etc/letsencrypt/live/{redirect_path}/fullchain.pem; # managed by Certbot
+        	ssl_certificate_key /etc/letsencrypt/live/{redirect_path}/privkey.pem; # managed by Certbot
+        	ssl_session_cache shared:le_nginx_SSL:1m; # managed by Certbot
+        	ssl_session_timeout 1440m; # managed by Certbot
+        	ssl_protocols TLSv1 TLSv1.1 TLSv1.2; # managed by Certbot
+        	ssl_prefer_server_ciphers on; # managed by Certbot
+
+		server_name {redirect_path};
+
+		root /var/www/html;
+		index index.html index.php;
+
+	}}
+	server {{
+		listen 443 ssl;
+
+		server_name osas.finance;
+		return 301 {redirect}$request_uri;
+	}}
 }}
 ## /etc/nginx/nginx.conf END
 ########################################
@@ -260,10 +306,10 @@ print("#### Save the following as /etc/nginx/nginx.conf")
 print("## Profile User-Agent Found:")
 print("# {}".format(ua))
 print("## Profile URIS Found ({}):".format(str(len(uris))))
-for uri in uris: 
+for uri in uris:
     print("# {}".format(uri))
-print(nginx_template.format(uris=uris_string,ua=ua_string,c2server=args.c2server,redirect=args.redirect,hostname=args.hostname))
+print(nginx_template.format(uris=uris_string,ua=ua_string,c2server=args.c2server,redirect=args.redirect,hosts=hosts_string,c2domain=args.c2domain,redirect_path=redirector_tld))
 
 # Print Errors Found
-if errorfound: 
+if errorfound:
     print(errors, file=sys.stderr)
