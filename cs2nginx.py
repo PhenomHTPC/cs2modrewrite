@@ -32,7 +32,8 @@ args = parser.parse_args()
 
 # Create a clean url for the conf template.
 redirector_url = urlparse(args.redirect)
-redirector_tld = '.'.join(redirector_url.netloc.split('.')[-3:])
+redirector_www_tld = '.'.join(redirector_url.netloc.split('.')[-3:])
+redirector_tld = '.'.join(redirector_url.netloc.split('.')[-2:])
 
 # Make sure we were provided with vaild URLs
 # https://stackoverflow.com/questions/7160737/python-how-to-validate-a-url-in-python-malformed-or-not
@@ -295,7 +296,7 @@ http {{
 	server {{
 		listen 443 ssl;
 
-		server_name osas.finance;
+		server_name {director_tld};
 		return 301 {redirect}$request_uri;
 	}}
 }}
@@ -308,7 +309,7 @@ print("# {}".format(ua))
 print("## Profile URIS Found ({}):".format(str(len(uris))))
 for uri in uris:
     print("# {}".format(uri))
-print(nginx_template.format(uris=uris_string,ua=ua_string,c2server=args.c2server,redirect=args.redirect,hosts=hosts_string,c2domain=args.c2domain,redirect_path=redirector_tld))
+print(nginx_template.format(uris=uris_string,ua=ua_string,c2server=args.c2server,redirect=args.redirect,hosts=hosts_string,c2domain=args.c2domain,redirect_path=redirector_www_tld,director_tld=redirector_tld))
 
 # Print Errors Found
 if errorfound:
