@@ -183,7 +183,7 @@ http {{
     ############################
     # HTTP server block with reverse-proxy
     ############################
-
+    underscores_in_headers on;
     server {{
         #########################
         # Custom server variables
@@ -295,6 +295,8 @@ http {{
 	}}
 	server {{
 		listen 443 ssl;
+        listen [::]:443 ssl;
+        listen 80;
 
 		server_name {director_tld};
 		return 301 {redirect}$request_uri;
